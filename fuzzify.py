@@ -1,28 +1,33 @@
 # -*- coding: utf-8 -*-
 
-"""
+'''
 fuzzify
 ======
 
 rSync fuzzy file pool creation
-"""
+'''
 
 from __future__ import absolute_import, division, print_function, with_statement
 
 __author__ = 'Shane R. Spencer'
-__author_email__ = "shane@bogomip.com"
+__author_email__ = 'shane@bogomip.com'
 __license__ = 'MIT'
 __copyright__ = '2014 Shane R. Spencer'
 __version__ = '0.0.1'
-__status__ = "Prototype"
-__url__ = "https://github.com/whardier/fuzzify"
-__description__ = "rSync fuzzy file pool creation"
+__url__ = 'https://github.com/whardier/fuzzify'
+__description__ = 'rSync fuzzy file pool creation'
 
 import os
 import sys
 
+import uuid
+
+import itertools
+
 import argparse
 import logging
+
+import json
 
 import hashlib
 
@@ -42,6 +47,8 @@ class LoggingAction(argparse.Action):
 
 def main():
 
+    session = str(uuid.uuid1())
+
     ###########################################################################
     ## Parse Arguments
 
@@ -53,9 +60,11 @@ def main():
 
     parser.add_argument('--dirty', action='store_true')
 
+    parser.add_argument('--pool', default='...fuzzify', help='Pool directory (must be on same partition as source data) and may be relative or absolute to the source directory')
+
     parser.add_argument('--hash', default=None, choices=('sha1', 'md5', 'sha224', 'sha256', 'sha512', 'sha384'), help='Also create a hash pool')
 
-    parser.add_argument('directory')
+    parser.add_argument('source_directory')
 
     args = parser.parse_args()
 
@@ -64,115 +73,76 @@ def main():
     ###########################################################################
     ## Set up initial paths
 
-    source_directory = path.path(args.directory)
-    destination_directory = source_directory.joinpath('...fuzzify')
+    source_directory = path.path(args.source_directory).expand().abspath()
+    pool_directory = source_directory.joinpath(args.pool).expand().abspath()
 
-    destination_directory.makedirs_p()
+    pool_directory.makedirs_p()
+
+    logging.info('Source Directory: ' + source_directory)
+    logging.info('Pool Directory: ' + pool_directory)
 
     ###########################################################################
     ## Walk the source path
 
-    for source_file in source_directory.walkfiles():
+    for child_directory in itertools.chain([source_directory], source_directory.walkdirs()):
 
-        logging.info(source_file)
+        if pool_directory in child_directory:
+            continue
 
-    """
-    #This is actually more optimal to do before (to enable shorter names for rsync matching)
-    if args.cleanup:
-        destination_iter = destination_path.walkfiles()
-        for file_path in destination_iter:
-            if file_path.lstat().st_nlink == 1:
-                logging.info('Removing: ' + file_path)
-                file_path.remove_p()
+        logging.info('Scanning Directory: ' + child_directory)
 
-    for batch, file_paths in enumerate(
-            split_every(args.batch, source_iter)
-        ):
+        for child_file in child_directory.files():
 
-        relative_file_paths = []
+            logging.info('Scanning File: ' + child_file)
 
-        for file_path in file_paths:
-            #FIXME: Need to ignore slashy files.  There appears to be a standard with most hash tools where if a file has slashes the hash begins with one. 
-            if '\\' in file_path:
-                continue
-            relative_file_paths.append(
-                file_path.relpath(source_path)
-            )
+            file_size_string = str(child_file.getsize())
 
-        logging.debug('Hashing: ' + repr(relative_file_paths))
+            link_directory = pool_directory.joinpath(*file_size_string)
 
-        file_hash_process = subprocess.Popen(
-            [args.hash] + relative_file_paths,
-            cwd=source_path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+            ## Read the hash and extend the link_directory using the hash hexdigest
 
-        file_hash_process.wait()
+            if args.hash:
+                hash = child_file.read_hexhash(args.hash)
+                link_directory = link_directory.joinpath(hash)
 
-        #Use splitlines to avoid file name problems with whitespace stripping
-        for line in file_hash_process.stdout.read().splitlines():
-            if not line: continue
+            ## Extend the directory with a filename where the file size is the suffix and the sha512 sum (not configurable) 
+            ## of the absolute path of the file is the prefix
 
-            hash, file_path = line.split('  ',1)
-            file_path = path.path(file_path)
+            link_file = link_directory.joinpath(file_size_string + '.' + hashlib.sha512(str(child_file).encode('utf-8')).hexdigest()).abspath()
 
-            file_path_hash_process = subprocess.Popen(
-                [args.hash],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
+            link_file.parent.makedirs_p()
 
-            file_path_hash_process.stdin.write(file_path)
-            file_path_hash_process.stdin.close()
+            if not link_file.exists():
+                child_file.link(link_file)
 
-            file_path_hash_process.wait()
+            ## Log regardless of link for cleanup reasons
 
-            file_path_hash = file_path_hash_process.stdout.readline().split('  ', 1)[0]
-
-            #Create destination dir if not exists
-            destination_file_path = destination_path.joinpath(hash[0:2]).joinpath(hash[2:4]).joinpath(hash[4:6]).joinpath(hash[6:])
-            destination_file_path.makedirs_p()
-
-            source_file_path = source_path.joinpath(file_path)
-
-            source_file_inode = source_file_path.lstat().st_ino
-
-            found_link = False
-
-            #Make short file names to deal with rsync fuzzy params (Levenshtein Distance <= 25)
-            for i in range(len(file_path_hash) + 1):
-
-                destination_file_link_path = destination_file_path.joinpath(
-                    file_path_hash[:i]
+            link_directory.joinpath('log').write_text(
+                    json.dumps(
+                        {
+                            'source': child_file,
+                            'link': link_file,
+                            'session': session,
+                        },
+                        sort_keys=True
+                    ) + os.linesep,
+                    append=True
                 )
 
-                try:
-                    stat = destination_file_link_path.lstat()
-                except:
-                    #high chances that this file doesn't exist
-                    break
-                finally:
-                    if stat.st_ino == source_file_inode:
-                        found_link = True
-                        break
+    ###########################################################################
+    ## Cleanup
 
-            if not found_link:
-                #Destructive for now.  Seems faster than checking files
-                logging.info('Linking: ' + file_path)
-                destination_file_link_path.remove_p()
-                source_file_path.link(destination_file_link_path)
-            else:
-                logging.info('Found Link: ' + file_path)
-    """
+    if not args.dirty:
+        for log_file in pool_directory.walkfiles('log'):
+            stored_files = list((y['link'] for y in (json.loads(x) for x in log_file.lines()) if y['session'] == session))
+
+            for pool_file in log_file.parent.files('*.*'):
+                if pool_file not in stored_files:
+                    logging.info('Removing Dirty File: ' + pool_file)
+                    pool_file.unlink_p()
 
 if __name__ == '__main__':
     try:
         sys.exit(main())
     except KeyboardInterrupt:
         pass
-
-
-print(__name__)
