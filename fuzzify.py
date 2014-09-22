@@ -20,8 +20,6 @@ __description__ = 'rSync fuzzy file pool creation'
 import os
 import sys
 
-import uuid
-
 import itertools
 
 import argparse
@@ -47,8 +45,6 @@ class LoggingAction(argparse.Action):
 
 def main():
 
-    session = str(uuid.uuid1())
-
     ###########################################################################
     ## Parse Arguments
 
@@ -59,6 +55,8 @@ def main():
     parser.add_argument('--logging', action=LoggingAction, default='none', help='debug|info|warning|error|none')
 
     parser.add_argument('--dirty', action='store_true')
+
+    parser.add_argument('--min-size', default=0)
 
     parser.add_argument('--pool', default='...fuzzify', help='Pool directory (must be on same partition as source data) and may be relative or absolute to the source directory')
 
@@ -78,6 +76,8 @@ def main():
 
     pool_directory.makedirs_p()
 
+    pool_directory.joinpath('.keep').touch()
+
     logging.info('Source Directory: ' + source_directory)
     logging.info('Pool Directory: ' + pool_directory)
 
@@ -95,7 +95,13 @@ def main():
 
             logging.info('Scanning File: ' + child_file)
 
-            file_size_string = str(child_file.getsize())
+            file_size = child_file.getsize()
+
+            if file_size < args.min_size:
+                logging.info('Skipping File: ' + child_file)
+                continue
+
+            file_size_string = str(file_size)
 
             link_directory = pool_directory.joinpath(*file_size_string)
 
@@ -122,7 +128,6 @@ def main():
                         {
                             'source': child_file,
                             'link': link_file,
-                            'session': session,
                         },
                         sort_keys=True
                     ) + os.linesep,
@@ -134,12 +139,15 @@ def main():
 
     if not args.dirty:
         for log_file in pool_directory.walkfiles('log'):
-            stored_files = list((y['link'] for y in (json.loads(x) for x in log_file.lines()) if y['session'] == session))
+            stored_files = list((json.loads(x)['link'] for x in log_file.lines()))
 
-            for pool_file in log_file.parent.files('*.*'):
+            ## Delete all non matching including log files
+            for pool_file in log_file.parent.files():
                 if pool_file not in stored_files:
-                    logging.info('Removing Dirty File: ' + pool_file)
+                    if pool_file.name != 'log':
+                        logging.info('Removing Dirty File: ' + pool_file)
                     pool_file.unlink_p()
+                    pool_file.parent.removedirs_p()
 
 if __name__ == '__main__':
     try:
