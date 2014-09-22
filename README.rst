@@ -32,6 +32,8 @@ On Remote:
 
 The rSync:
 
+.. code::
+
   rsync -avPHS --human-readable --stats --fuzzy /sourcedir/...fuzzify /sourcedir/ remote:/destdir/ --delete --delete-after
 
 Then just remove ...fuzzify in sourcedir and destdir as needed.
