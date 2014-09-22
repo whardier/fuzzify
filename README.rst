@@ -14,3 +14,24 @@ With any luck, and in an office environment there will be plenty of opportunity,
 The fuzzify prep time is a consideration of course if you are planning on backing up files.  It runs quickly, hopefully it runs fast enough to make the bandwidth savings worth it in your situation.
 
 You can optionally have fuzzify run in dirty mode.  When files are removed from the file set they will persist in a way in the fuzzify pool where when they are restored to the file set there is a high likelyhood that rsync will find a match.  It is probably not desirable to keep the pool dirty for very long due to it retaining all files via hard link each time the pool is refreshed.
+
+Example Session
+---------------
+
+On Local:
+
+.. code::
+
+  fuzzify --logging=debug /sourcedir/
+  
+On Remote:
+
+.. code::
+
+  fuzzify --logging=debug /destdir/
+
+The rSync:
+
+  rsync -avPHS --human-readable --stats --fuzzy /sourcedir/...fuzzify /sourcedir/ remote:/destdir/ --delete --delete-after
+
+Then just remove ...fuzzify in sourcedir and destdir as needed.
